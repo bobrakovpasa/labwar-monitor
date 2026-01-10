@@ -1,0 +1,23 @@
+name: LabWar Monitor
+
+on:
+  schedule:
+    # Каждые 5 минут
+    - cron: '*/5 * * * *'
+  workflow_dispatch:  # Для ручного запуска
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Отправляем тестовое сообщение
+      run: |
+        echo "🎉 Начинаю работу..."
+        
+        # Отправляем тестовое сообщение в Telegram
+        curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+          -d chat_id="${{ secrets.CHAT_ID }}" \
+          -d text="✅ МОНИТОР ЗАПУЩЕН! GitHub Actions работает корректно. Время: $(date '+%H:%M:%S')"
+        
+        echo "✅ Сообщение отправлено!"
