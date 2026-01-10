@@ -1,0 +1,89 @@
+name: LabWar Monitor
+
+on:
+  schedule:
+    # Каждые 5 минут
+    - cron: '*/5 * * * *'
+  workflow_dispatch:  # Для ручного запуска
+
+jobs:
+  check-players:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Проверка всех игроков
+      id: check
+      run: |
+        # Список игроков (можно редактировать)
+        PLAYERS=(
+          "Barmaleikin" "Subbota96" "angel_of_dead1"
+          "syslenok_88" "Lord555" "Znatok" "Sprei"
+          "OBRON555" "den77" "CaIIIeHbkA" "_4ka_" "MeinKrieg"
+          "_ASUS_" "AvtoRitet" "Zipp0_" "_DONZ_" "B_A_T"
+          "xxxMAXxxx" "Klassik" "CHIPS" "Diabolo" "Ded1"
+          "RED_HEAD_" "ShymaXER" "Krot13" "KAMAZ"
+          "1Kazak1" "4uKaTuJIo" "PeaceDeath" "xXx_stalker_xXx" "jafar"
+          "aleksandr_25" "Eclerhik" "Sharliz" "Wolf9" "PaHDoM"
+        )
+        
+        # Черный список мобов (простые мобы)
+        BAD_MOBS="Морф|Сектант|Вампир-пластун|Серебристый Морф|Топтун|Трупоед"
+        BAD_MOBS="$BAD_MOBS|Гигантский Морф|Боец|Охранник|Старый робот"
+        BAD_MOBS="$BAD_MOBS|Собака-мутант|Шнырь|Белесое существо"
+        
+        echo "🚀 Начинаю проверку ${#PLAYERS[@]} игроков..."
+        
+        for PLAYER in "${PLAYERS[@]}"
+        do
+          echo "🔍 Проверяю $PLAYER..."
+          
+          # Запрашиваем страницу игрока
+          RESPONSE=$(curl -s "http://labwar.ru/log_infa.php?mod=who&blogin=$PLAYER")
+          
+          # Проверяем статус "В бою"
+          if [[ $RESPONSE == *"В бою"* ]] && [[ $RESPONSE == *"См. бой"* ]]; then
+            echo "⚔️ $PLAYER в бою!"
+            
+            # Пытаемся получить лог боя
+            BATTLE_LOG=$(echo "$RESPONSE" | grep -o "На .*нападает.*\. Бой начался" | head -1)
+            
+            if [ -n "$BATTLE_LOG" ]; then
+              # Извлекаем имя моба
+              MOB_NAME=$(echo "$BATTLE_LOG" | sed -n 's/.*нападает \(.*\)\. Бой начался/\1/p' | cut -d '[' -f1 | xargs)
+              
+              echo "👹 Моб: $MOB_NAME"
+              
+              # Проверяем черный список (регистронезависимо)
+              MOB_LOWER=$(echo "$MOB_NAME" | tr '[:upper:]' '[:lower:]')
+              
+              if [[ ! $MOB_LOWER =~ $(echo "$BAD_MOBS" | tr '[:upper:]' '[:lower:]') ]]; then
+                # Отправляем в Telegram
+                MESSAGE="⚔️ БОЙ: $PLAYER
+                🕒 $(date '+%H:%M:%S')
+                📝 $BATTLE_LOG"
+                
+                curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+                  -d chat_id="${{ secrets.CHAT_ID }}" \
+                  -d text="$MESSAGE"
+                
+                echo "✅ Отправили уведомление про $PLAYER vs $MOB_NAME"
+              else
+                echo "🚫 Пропускаем: $MOB_NAME в черном списке"
+              fi
+            fi
+          fi
+          
+          # Проверяем АБК (раз в 2 часа)
+          CURRENT_HOUR=$(date +%H)
+          if [[ $RESPONSE == *"Армейский боевой коктейль"* ]] && [[ $CURRENT_HOUR == "02" || $CURRENT_HOUR == "08" || $CURRENT_HOUR == "14" || $CURRENT_HOUR == "20" ]]; then
+            echo "💊 $PLAYER с АБК!"
+            curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+              -d chat_id="${{ secrets.CHAT_ID }}" \
+              -d text="$PLAYER АБК"
+          fi
+          
+          # Ждем 2 секунды между игроками (чтобы не перегружать)
+          sleep 2
+        done
+        
+        echo "✅ Проверка завершена!"
