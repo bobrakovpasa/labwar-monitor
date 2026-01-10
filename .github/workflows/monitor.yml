@@ -2,22 +2,180 @@ name: LabWar Monitor
 
 on:
   schedule:
-    # Каждые 5 минут
+    # Каждые 5 минут (можно изменить)
     - cron: '*/5 * * * *'
   workflow_dispatch:  # Для ручного запуска
 
 jobs:
-  check:
+  check-players:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Отправляем тестовое сообщение
+    - name: Установка необходимых программ
       run: |
-        echo "🎉 Начинаю работу..."
+        # Обновляем систему
+        sudo apt-get update
+        echo "✅ Система обновлена"
+    
+    - name: Проверка всех игроков
+      run: |
+        echo "🚀 Запускаю мониторинг..."
+        echo "Время: $(date '+%H:%M:%S %d.%m.%Y')"
         
-        # Отправляем тестовое сообщение в Telegram
+        # Список игроков (ВСЕ ваши игроки)
+        PLAYERS=(
+          "Barmaleikin" "Subbota96" "angel_of_dead1"
+          "syslenok_88" "Lord555" "Znatok" "Sprei"
+          "OBRON555" "den77" "CaIIIeHbkA" "_4ka_" "MeinKrieg"
+          "_ASUS_" "AvtoRitet" "Zipp0_" "_DONZ_" "B_A_T"
+          "xxxMAXxxx" "Klassik" "CHIPS" "Diabolo" "Ded1"
+          "RED_HEAD_" "ShymaXER" "Krot13" "KAMAZ"
+          "1Kazak1" "4uKaTuJIo" "PeaceDeath" "xXx_stalker_xXx" "jafar"
+          "aleksandr_25" "Eclerhik" "Sharliz" "Wolf9" "PaHDoM"
+        )
+        
+        echo "👥 Всего игроков: ${#PLAYERS[@]}"
+        
+        # Черный список мобов (первые 10 для теста)
+        BAD_MOBS=(
+          "Морф" "Сектант" "Вампир-пластун" "Серебристый Морф"
+          "Топтун" "Трупоед" "Гигантский Морф" "Боец"
+          "Охранник" "Старый робот"
+        )
+        
+        echo "🚫 Мобов в фильтре: ${#BAD_MOBS[@]}"
+        
+        # Файл для хранения статусов (чтобы не спамить)
+        STATUS_FILE="player_status.txt"
+        
+        # Создаем файл если его нет
+        if [ ! -f "$STATUS_FILE" ]; then
+          echo "Создаю файл статусов..."
+          for P in "${PLAYERS[@]}"; do
+            echo "$P:unknown" >> "$STATUS_FILE"
+          done
+        fi
+        
+        # Проверяем каждого игрока
+        for PLAYER in "${PLAYERS[@]}"
+        do
+          echo "---"
+          echo "🔍 Проверяю: $PLAYER"
+          
+          # Получаем страницу игрока
+          URL="http://labwar.ru/log_infa.php?mod=who&blogin=$PLAYER"
+          echo "📡 Запрос: $URL"
+          
+          # Делаем запрос с таймаутом
+          RESPONSE=$(curl -s --max-time 10 "$URL" || echo "ERROR")
+          
+          if [ "$RESPONSE" = "ERROR" ]; then
+            echo "❌ Ошибка соединения для $PLAYER"
+            continue
+          fi
+          
+          # Проверяем статус боя
+          OLD_STATUS=$(grep "^$PLAYER:" "$STATUS_FILE" | cut -d: -f2)
+          
+          if echo "$RESPONSE" | grep -q "В бою" && echo "$RESPONSE" | grep -q "См. бой"; then
+            NEW_STATUS="in_battle"
+            echo "⚔️ $PLAYER в бою!"
+            
+            # Если был не в бою, а теперь в бою - проверяем детали
+            if [ "$OLD_STATUS" != "in_battle" ]; then
+              echo "🎯 Новый бой! Анализируем..."
+              
+              # Пытаемся получить лог боя
+              BATTLE_LOG=$(echo "$RESPONSE" | grep -o "На .*нападает.*\. Бой начался" | head -1)
+              
+              if [ -n "$BATTLE_LOG" ]; then
+                echo "📝 Лог боя: $BATTLE_LOG"
+                
+                # Извлекаем имя моба
+                MOB_NAME=$(echo "$BATTLE_LOG" | sed 's/.*нападает //; s/\. Бой начался//; s/\[.*//' | xargs)
+                
+                if [ -n "$MOB_NAME" ]; then
+                  echo "👹 Моб: $MOB_NAME"
+                  
+                  # Проверяем черный список
+                  MOB_FOUND="no"
+                  for BAD_MOB in "${BAD_MOBS[@]}"; do
+                    if echo "$MOB_NAME" | grep -iq "$BAD_MOB"; then
+                      MOB_FOUND="yes"
+                      break
+                    fi
+                  done
+                  
+                  if [ "$MOB_FOUND" = "no" ]; then
+                    echo "✅ Интересный моб! Отправляем уведомление"
+                    
+                    # Отправляем в Telegram
+                    MESSAGE="⚔️ БОЙ: $PLAYER
+🕒 $(date '+%H:%M:%S')
+📝 $BATTLE_LOG"
+                    
+                    curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+                      -d chat_id="${{ secrets.CHAT_ID }}" \
+                      -d text="$MESSAGE"
+                    
+                    echo "📤 Уведомление отправлено"
+                  else
+                    echo "🚫 Моб в черном списке, пропускаем"
+                  fi
+                else
+                  echo "❓ Не удалось определить моба"
+                  
+                  # Все равно отправляем, но с пометкой
+                  MESSAGE="⚔️ БОЙ: $PLAYER
+🕒 $(date '+%H:%M:%S')
+❓ Неизвестный враг
+📝 $BATTLE_LOG"
+                  
+                  curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+                    -d chat_id="${{ secrets.CHAT_ID }}" \
+                    -d text="$MESSAGE"
+                fi
+              else
+                echo "⚠️ Лог боя не найден"
+              fi
+            else
+              echo "↔️ Бой продолжается (уже сообщали)"
+            fi
+            
+          else
+            NEW_STATUS="not_in_battle"
+            echo "😴 $PLAYER не в бою"
+            
+            # Проверяем АБК (раз в 2 часа в определённые минуты)
+            CURRENT_MINUTE=$(date +%M)
+            if echo "$RESPONSE" | grep -q "Армейский боевой коктейль"; then
+              if [ "$CURRENT_MINUTE" = "00" ] || [ "$CURRENT_MINUTE" = "30" ]; then
+                echo "💊 $PLAYER с АБК! Отправляем..."
+                
+                curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+                  -d chat_id="${{ secrets.CHAT_ID }}" \
+                  -d text="$PLAYER АБК"
+              fi
+            fi
+          fi
+          
+          # Обновляем статус в файле
+          sed -i "s/^$PLAYER:.*/$PLAYER:$NEW_STATUS/" "$STATUS_FILE"
+          
+          # Пауза между проверками игроков
+          sleep 1
+        done
+        
+        echo "---"
+        echo "✅ Проверка завершена!"
+        echo "Время окончания: $(date '+%H:%M:%S')"
+        
+        # Отправляем итоговый отчет
         curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
           -d chat_id="${{ secrets.CHAT_ID }}" \
-          -d text="✅ МОНИТОР ЗАПУЩЕН! GitHub Actions работает корректно. Время: $(date '+%H:%M:%S')"
-        
-        echo "✅ Сообщение отправлено!"
+          -d text="📊 Проверка завершена. Игроков: ${#PLAYERS[@]}. Время: $(date '+%H:%M:%S')" \
+          -d disable_notification="true"
+    
+    - name: Очистка (опционально)
+      run: |
+        echo "🧹 Очистка завершена"
