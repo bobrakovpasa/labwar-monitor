@@ -2,61 +2,60 @@ name: LabWar Monitor
 
 on:
   schedule:
-    # Каждые 10 минут
-    - cron: '*/10 * * * *'
-  workflow_dispatch:  # Для ручного запуска
+    - cron: '*/10 * * * *'  # Каждые 10 минут
+  workflow_dispatch:
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Настройка окружения
-      run: |
-        apt-get update
-        apt-get install -y curl
-        echo "✅ Окружение настроено"
-    
     - name: Проверка игроков
       run: |
         echo "=== ЗАПУСК МОНИТОРА ==="
         echo "Время: $(date '+%H:%M:%S')"
         
-        # Тестовое сообщение в Telegram
+        # Отправляем стартовое сообщение
         curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
           -d chat_id="${{ secrets.CHAT_ID }}" \
-          -d text="🔄 Монитор запущен. Проверяю игроков..." \
-          -d disable_notification="true"
+          -d text="🔄 Монитор запущен. Время: $(date '+%H:%M:%S')"
         
-        # Массив игроков (5 для теста)
-        players=("Barmaleikin" "Subbota96" "angel_of_dead1" "Lord555" "Znatok")
+        # 1. Сначала авторизуемся и получаем куки
+        echo "🔐 Авторизуюсь в игре..."
         
-        # Черный список мобов
-        bad_mobs=("Морф" "Сектант" "Вампир-пластун" "Топтун")
+        # Создаем файл для куков
+        COOKIE_FILE="labwar_cookies.txt"
         
-        echo "Игроков для проверки: ${#players[@]}"
-        echo "Мобов в фильтре: ${#bad_mobs[@]}"
+        # Делаем запрос на авторизацию
+        curl -s -c "$COOKIE_FILE" "http://labwar.ru/index.php?mod=autorize&login=bot1&pass=00000000&scin=" > /dev/null
         
-        # Переменная для сбора результатов
-        battles_found=""
+        if [ ! -f "$COOKIE_FILE" ]; then
+          echo "❌ Ошибка авторизации"
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.CHAT_ID }}" \
+            -d text="❌ Ошибка авторизации в игре"
+          exit 1
+        fi
         
-        # Проверяем каждого игрока
+        echo "✅ Авторизация успешна"
+        
+        # 2. Теперь проверяем игроков с куками
+        players=("Barmaleikin" "Subbota96" "angel_of_dead1")
+        
         for player in "${players[@]}"; do
           echo "---"
-          echo "Проверяю: $player"
+          echo "Игрок: $player"
           
-          # Делаем запрос с таймаутом
-          response=$(curl -s --max-time 15 "http://labwar.ru/log_infa.php?mod=who&blogin=$player" 2>/dev/null || echo "ERROR_TIMEOUT")
+          # Делаем запрос с куками
+          response=$(curl -s -b "$COOKIE_FILE" --max-time 10 \
+            "http://labwar.ru/log_infa.php?mod=who&blogin=$player" 2>/dev/null || echo "ERROR")
           
-          if [ "$response" = "ERROR_TIMEOUT" ]; then
-            echo "⚠️ Таймаут запроса"
-            continue
-          fi
-          
-          if echo "$response" | grep -q "В бою" && echo "$response" | grep -q "См. бой"; then
-            echo "⚔️ НАЙДЕН БОЙ!"
+          if [ "$response" = "ERROR" ]; then
+            echo "Ошибка запроса"
+          elif echo "$response" | grep -q "В бою" && echo "$response" | grep -q "См. бой"; then
+            echo "⚔️ В БОЮ!"
             
-            # Пытаемся вытащить лог боя
+            # Пытаемся найти лог боя
             battle_log=$(echo "$response" | grep -o "На .*нападает.*\. Бой начался" | head -1)
             
             if [ -n "$battle_log" ]; then
@@ -68,41 +67,34 @@ jobs:
               if [ -n "$mob_name" ]; then
                 echo "Моб: $mob_name"
                 
-                # Проверяем черный список
-                skip_mob="no"
-                for bad_mob in "${bad_mobs[@]}"; do
-                  if echo "$mob_name" | grep -iq "$bad_mob"; then
-                    echo "🚫 Пропускаем (в черном списке): $bad_mob"
-                    skip_mob="yes"
-                    break
-                  fi
-                done
-                
-                if [ "$skip_mob" = "no" ]; then
-                  # Формируем сообщение
-                  message="⚔️ БОЙ: $player
-        🕒 $(date '+%H:%M:%S')
-        👹 $mob_name
-        📝 $battle_log"
+                # Простой черный список
+                if [[ ! "$mob_name" =~ [Мм]орф ]] && \
+                   [[ ! "$mob_name" =~ [Сс]ектант ]] && \
+                   [[ ! "$mob_name" =~ [Тт]оптун ]]; then
                   
-                  # Отправляем в Telegram
+                  echo "✅ Интересный моб!"
+                  
+                  # Отправляем уведомление
                   curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
                     -d chat_id="${{ secrets.CHAT_ID }}" \
-                    -d text="$message"
-                  
-                  echo "✅ Уведомление отправлено"
-                  battles_found="$battles_found• $player vs $mob_name\n"
+                    -d text="⚔️ БОЙ: $player
+        🕒 $(date '+%H:%M:%S')
+        👹 $mob_name"
+                else
+                  echo "🚫 Моб в черном списке"
                 fi
               fi
             fi
           else
             echo "Не в бою"
             
-            # Проверка АБК (каждый час в 0 минут)
-            current_minute=$(date +%M)
-            if [ "$current_minute" = "00" ]; then
-              if echo "$response" | grep -q "Армейский боевой коктейль"; then
-                echo "💊 Обнаружен АБК"
+            # Проверка АБК
+            if echo "$response" | grep -q "Армейский боевой коктейль"; then
+              echo "💊 Обнаружен АБК"
+              
+              # Отправляем раз в 2 часа (в 00 и 30 минут)
+              current_minute=$(date +%M)
+              if [ "$current_minute" = "00" ] || [ "$current_minute" = "30" ]; then
                 curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
                   -d chat_id="${{ secrets.CHAT_ID }}" \
                   -d text="$player АБК" \
@@ -111,25 +103,16 @@ jobs:
             fi
           fi
           
-          # Пауза 2 секунды между запросами
           sleep 2
         done
         
-        echo "=== ПРОВЕРКА ЗАВЕРШЕНА ==="
+        # Удаляем файл с куками
+        rm -f "$COOKIE_FILE"
         
-        # Отправляем итоговый отчет
-        if [ -n "$battles_found" ]; then
-          report="📊 ОТЧЕТ:
-        Найдено боёв: $(echo -e "$battles_found" | grep -c '•')
-        $battles_found
-        Время: $(date '+%H:%M:%S')"
-        else
-          report="📊 ОТЧЕТ: Активных боёв не найдено. Время: $(date '+%H:%M:%S')"
-        fi
+        echo "=== ЗАВЕРШЕНО ==="
         
+        # Финальное сообщение
         curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
           -d chat_id="${{ secrets.CHAT_ID }}" \
-          -d text="$report" \
+          -d text="✅ Проверка завершена. Время: $(date '+%H:%M:%S')" \
           -d disable_notification="true"
-        
-        echo "✅ Отчет отправлен"
