@@ -2,7 +2,7 @@ name: LabWar Player Monitor
 on:
   # Запуск каждые 5 минут
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/ 1 * * * *'
   # Ручной запуск
   workflow_dispatch:
 
